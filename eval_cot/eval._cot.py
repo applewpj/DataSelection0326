@@ -48,7 +48,7 @@ def cot_infer(args, model, tokenizer, prompts, labels):
 
 
 
-
+# git test
 
 def main():
     dataset = ""
