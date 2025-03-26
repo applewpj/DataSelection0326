@@ -1,0 +1,24 @@
+{
+    "score": {
+        "acc": 0.631578947368421
+    },
+    "count": 1273,
+    "args": {
+        "data_path": "./dataset/test/medqa.jsonl",
+        "output_path": "./results/medqa/medqa_5op-llama3-8b-sft",
+        "chunk_num": 1,
+        "chunk_idx": 0,
+        "resume": true,
+        "model_name_or_path": "/mnt/hwfile/medai/LLMModels/Model/Meta-Llama-3-8B",
+        "peft_path": "/mnt/hwfile/medai/liaoyusheng/projects/LLM-REASONING/DataSeletion/checkpoints/medqa_5op-llama3-8b-sft",
+        "use_vllm": false,
+        "gpu_memory_utilization": 0.7,
+        "prepare_func": null,
+        "batch_size": 4,
+        "temperature": 1.0,
+        "max_new_tokens": 2048,
+        "direct_answer": false,
+        "cache_file": "cache.jsonl",
+        "result_file": "result.json"
+    }
+}

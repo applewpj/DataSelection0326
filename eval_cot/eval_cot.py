@@ -12,6 +12,7 @@ from vllm import LLM, SamplingParams
 from vllm.lora.request import LoRARequest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
 
 def parse_args():
     parser = argparse.ArgumentParser(prog="Data Selection Evaluation")
@@ -64,7 +65,7 @@ def load_dataset(data_path):
             datas = [json.loads(line) for line in f.readlines()]
     
     else:
-        raise NotImplementationError
+        raise NotImplementedError
     
     return datas
 
@@ -97,6 +98,33 @@ def update_cache(output_path, cache_file, temp_cache):
         for line in temp_cache:
             f.write(json.dumps(line) + "\n")
 
+def direct_infer(args, model, tokenizer, dataset):
+    label_set = list(set([data["messages"][-1]["content"] for data in dataset]))
+    # DIRECT_INFER_PROMPT = f"""The answer is """
+    for i in tqdm(range(0, len(dataset), args.batch_size), ncols=100):
+        batch_datas = dataset[i:i+args.batch_size]
+        batch_inputs = [f"""Question: {data["messages"][0]["content"]} Answer: """ for data in batch_datas]
+        
+        batch_tokenized_inputs = tokenizer(batch_inputs, padding="longest", return_tensors="pt")
+        batch_tokenized_inputs = {key: value.cuda() for key, value in batch_tokenized_inputs.items()}
+        batch_tokenized_answer_outputs = model.generate(
+            **batch_tokenized_inputs,
+            max_new_tokens=1,
+            do_sample=False,
+            sequence_bias={tuple(tokenizer.encode(label)[-1:]): 100.0 for label in label_set},
+        )
+        batch_full_text = tokenizer.batch_decode(batch_tokenized_answer_outputs, skip_special_tokens=True)
+        batch_answer_outputs = [
+            text[len(input):] for input, text in zip(batch_inputs, batch_full_text)
+        ]
+        
+        for batch_id, data in enumerate(batch_datas):
+            data["cot"] = ""
+            data["prediction"] = batch_answer_outputs[batch_id]
+        
+        update_cache(args.output_path, args.cache_file, batch_datas)
+        
+
 def cot_infer(args, model, tokenizer, dataset):
     label_set = set([data["messages"][-1]["content"] for data in dataset])
     
@@ -112,7 +140,7 @@ def cot_infer(args, model, tokenizer, dataset):
             max_new_tokens=args.max_new_tokens,
             do_sample=False,
         )
-        batch_outputs = tokenizer.batch_decode(batch_tokenized_outputs)
+        batch_outputs = tokenizer.batch_decode(batch_tokenized_outputs, skip_special_tokens=True)
         
         # get answer inference
         batch_get_answer_inputs = [f"""{output} Therefore, the answer is """ for output in batch_outputs]
@@ -124,7 +152,7 @@ def cot_infer(args, model, tokenizer, dataset):
             do_sample=False,
             sequence_bias={tuple(tokenizer.encode(label)[-1:]): 100.0 for label in label_set},
         )
-        batch_full_text = tokenizer.batch_decode(batch_tokenized_answer_outputs)
+        batch_full_text = tokenizer.batch_decode(batch_tokenized_answer_outputs, skip_special_tokens=True)
         
         batch_cot_outputs = [
             text[len(input):] for input, text in zip(batch_inputs, batch_full_text)
@@ -142,8 +170,8 @@ def score(args):
     with open(os.path.join(args.output_path, args.cache_file), "r") as f:
         datas = [json.loads(line) for line in f.readlines()]
     
-    acc = sum([data["prediction"] == data["message"][-1]["content"] for data in datas]) / len(datas)
-    results = {'score': score, 'count': len(datas), 'args': vars(args)}
+    acc = sum([data["prediction"] == data["messages"][-1]["content"] for data in datas]) / len(datas)
+    results = {'score': {"acc": acc}, 'count': len(datas), 'args': vars(args)}
     with open(os.path.join(args.output_path, args.result_file), "w") as f:
         json.dump(results, f, indent=4, separators=(',', ': '))
 
@@ -166,9 +194,12 @@ def load_model_and_tokenizer(model_path, peft_path=None):
 
 def main():
     model, tokenizer = load_model_and_tokenizer(args.model_name_or_path, args.peft_path)
-    
     dataset = prepare_dataset(args.data_path, args.output_path, args.cache_file, args.resume)
-    cot_infer(args, model, tokenizer, dataset)
+    
+    if args.peft_path is not None and not args.direct_answer:
+        cot_infer(args, model, tokenizer, dataset)
+    else:
+        direct_infer(args, model, tokenizer, dataset)
     score(args)
     
 if __name__ == "__main__":

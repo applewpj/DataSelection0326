@@ -4,3 +4,6 @@ wandb
 motivation
 eval
 results/*/cache.jsonl
+checkpoints
+logs
+slurm*

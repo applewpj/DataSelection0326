@@ -67,7 +67,24 @@ def obtain_dataset(data_path):
     else:
         raise NotImplementedError
 
-    data_list = [{"messages": data["messages"]} for data in datas]
+    if "messages" in datas[0]:
+        data_list = [{"messages": data["messages"]} for data in datas]
+    else:
+        data_list = [
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": data["input"],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": data["output"],
+                    },
+                ]
+            } for data in datas
+        ]
+    
     dataset = Dataset.from_list(data_list)
     # print(dataset[0])
     return dataset 
