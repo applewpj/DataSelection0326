@@ -6,4 +6,4 @@ eval
 results/*/*/cache.jsonl
 checkpoints
 logs
-slurm*
+./slurm*
