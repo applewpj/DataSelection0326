@@ -11,7 +11,7 @@ from tqdm import tqdm
 from vllm import LLM, SamplingParams
 from vllm.lora.request import LoRARequest
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from peft import PeftModel
 
 def parse_args():
@@ -79,7 +79,7 @@ def prepare_dataset(data_path, output_path, cache_file, resume):
 
     return datas
 
-def concat_messages(messages, tokenizer):
+def concat_messages(messages, tokenizer, add_generate_prompt=True):
     message_text = ""
     for message in messages:
         if message["role"] == "system":
@@ -91,6 +91,10 @@ def concat_messages(messages, tokenizer):
                 message["content"].strip() + tokenizer.eos_token + "\n"
         else:
             raise ValueError("Invalid role: {}".format(message["role"]))
+    
+    if add_generate_prompt:
+        message_text += "<|assistant|>\n"
+    
     return message_text
 
 def update_cache(output_path, cache_file, temp_cache):
@@ -125,9 +129,38 @@ def direct_infer(args, model, tokenizer, dataset):
         update_cache(args.output_path, args.cache_file, batch_datas)
         
 
+def cot_vllm_infer(args, model, tokenizer, dataset):
+    label_set = set([data["messages"][-1]["content"] for data in dataset])
+    logit_bias = {tokenizer.encode(label, add_special_tokens=False)[-1]: 100.0 for label in label_set}
+    sampling_params = SamplingParams(n=1, temperature=args.temperature, max_tokens=args.max_new_tokens)
+    get_answer_sampling_params = SamplingParams(n=1, temperature=args.temperature, max_tokens=1, logit_bias=logit_bias)
+    for i in tqdm(range(0, len(dataset), args.batch_size), ncols=100):
+        batch_datas = dataset[i:i+args.batch_size]
+        
+        # cot inference
+        batch_inputs = [concat_messages(data["messages"][0:1], tokenizer) for data in batch_datas]
+        if args.peft_path:
+            batch_outputs = model.generate(prompts=batch_inputs, sampling_params=sampling_params, lora_request=LoRARequest("lora", 1, args.peft_path), use_tqdm=False)
+        else:
+            batch_outputs = model.generate(prompts=batch_inputs, sampling_params=sampling_params, use_tqdm=False)
+        batch_outputs = [output.outputs[0].text.strip() for output in batch_outputs]
+        
+        batch_get_answer_inputs = [f"""{input}{output} Therefore, the answer is """ for (input, output) in zip(batch_inputs, batch_outputs)]
+        
+        if args.peft_path:
+            batch_answer_outputs = model.generate(prompts=batch_get_answer_inputs, sampling_params=get_answer_sampling_params, lora_request=LoRARequest("lora", 1, args.peft_path), use_tqdm=False)
+        else:
+            batch_answer_outputs = model.generate(prompts=batch_get_answer_inputs, sampling_params=get_answer_sampling_params, use_tqdm=False)
+        batch_answer_outputs = [output.outputs[0].text.strip() for output in batch_answer_outputs]
+        
+        for batch_id, data in enumerate(batch_datas):
+            data["cot"] = batch_outputs[batch_id]
+            data["prediction"] = batch_answer_outputs[batch_id]
+        
+        update_cache(args.output_path, args.cache_file, batch_datas)
+
 def cot_infer(args, model, tokenizer, dataset):
     label_set = set([data["messages"][-1]["content"] for data in dataset])
-    
     for i in tqdm(range(0, len(dataset), args.batch_size), ncols=100):
         batch_datas = dataset[i:i+args.batch_size]
         
@@ -150,7 +183,7 @@ def cot_infer(args, model, tokenizer, dataset):
             **batch_tokenized_get_answer_inputs,
             max_new_tokens=1,
             do_sample=False,
-            sequence_bias={tuple(tokenizer.encode(label)[-1:]): 100.0 for label in label_set},
+            sequence_bias={tokenizer.encode(label, add_special_tokens=False)[-1]: 100.0 for label in label_set},
         )
         batch_full_text = tokenizer.batch_decode(batch_tokenized_answer_outputs, skip_special_tokens=True)
         
@@ -175,17 +208,26 @@ def score(args):
     with open(os.path.join(args.output_path, args.result_file), "w") as f:
         json.dump(results, f, indent=4, separators=(',', ': '))
 
-def load_model_and_tokenizer(model_path, peft_path=None):
-    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16, trust_remote_code=True).cuda()
+def load_model_and_tokenizer(model_path, peft_path=None, use_vllm=False, gpu_memory_utilization=0.7):
+
+    # load model
+    if use_vllm:
+        model_config = AutoConfig.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
+        if peft_path is not None:
+            model = LLM(model=model_path, trust_remote_code=True, max_model_len=min(16000, model_config.max_position_embeddings), max_seq_len_to_capture=8000, gpu_memory_utilization=gpu_memory_utilization, enable_lora=True)
+        else:
+            model = LLM(model=model_path, trust_remote_code=True, max_model_len=min(16000, model_config.max_position_embeddings), max_seq_len_to_capture=8000, gpu_memory_utilization=gpu_memory_utilization)
+            
+    else:
+        model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16, trust_remote_code=True).cuda()
+        if peft_path is not None:
+            model = PeftModel.from_pretrained(model, peft_path)
+            model = model.merge_and_unload()
+            model.to(torch.float16)
+        model.eval()
+    
+    # load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    
-    if peft_path is not None:
-        model = PeftModel.from_pretrained(model, peft_path)
-        model = model.merge_and_unload()
-        model.to(torch.float16)
-    
-    model.eval()
-    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left" 
@@ -193,11 +235,14 @@ def load_model_and_tokenizer(model_path, peft_path=None):
     return model, tokenizer
 
 def main():
-    model, tokenizer = load_model_and_tokenizer(args.model_name_or_path, args.peft_path)
+    model, tokenizer = load_model_and_tokenizer(args.model_name_or_path, args.peft_path, args.use_vllm, args.gpu_memory_utilization)
     dataset = prepare_dataset(args.data_path, args.output_path, args.cache_file, args.resume)
     
-    if args.peft_path is not None and not args.direct_answer:
-        cot_infer(args, model, tokenizer, dataset)
+    if not args.direct_answer:
+        if args.use_vllm:
+            cot_vllm_infer(args, model, tokenizer, dataset)
+        else:
+            cot_infer(args, model, tokenizer, dataset)
     else:
         direct_infer(args, model, tokenizer, dataset)
     score(args)
