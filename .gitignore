@@ -3,7 +3,7 @@ eval_output
 wandb
 motivation
 eval
-results/*/cache.jsonl
+results/*/*/cache.jsonl
 checkpoints
 logs
 slurm*

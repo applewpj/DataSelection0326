@@ -1,7 +1,7 @@
 DATASET=pubmedqa
 MODEL_PATH=/mnt/hwfile/medai/LLMModels/Model/Meta-Llama-3-8B 
-PEFT_PATH=/mnt/hwfile/medai/liaoyusheng/projects/LLM-REASONING/DataSeletion/checkpoints/medqa_5op-llama3-8b-sft
-MODEL_NAME=medqa_5op-llama3-8b-sft
+PEFT_PATH=/mnt/hwfile/medai/liaoyusheng/projects/LLM-REASONING/DataSeletion/checkpoints/medqa_5op-llama3-8b-sft-full
+MODEL_NAME=medqa_5op-llama3-8b-sft-full
 
 srun python -m pdb eval_cot/eval_cot.py \
     --model_name_or_path ${MODEL_PATH} \
