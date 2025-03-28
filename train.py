@@ -20,6 +20,12 @@ from trl import (
     get_peft_config,
 )
 
+import yaml
+current_dir = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(current_dir, 'config.yaml'), 'r') as f:
+    # 将YAML内容转换为字典
+    LOCAL_MODEL_PATHS = yaml.safe_load(f)
+
 def concat_messages(example):
     output_texts = []
     
@@ -96,6 +102,8 @@ def split_dataset(dataset: Dataset, test_size=0.01):
 if __name__ == "__main__":
     parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
     script_args, training_args, model_config = parser.parse_args_and_config()
+    model_config.model_name_or_path = LOCAL_MODEL_PATHS[model_config.model_name_or_path] if model_config.model_name_or_path in LOCAL_MODEL_PATHS else args.model_name_or_path
+    
     training_args.dataset_num_proc = 8
     model_config.lora_target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "gate_proj", "down_proj"]
 
